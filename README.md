@@ -99,6 +99,7 @@ uv run uvicorn web_app:app --reload --port 7860
 - 左侧输入任务，实时流式显示 Agent 回复、工具调用与返回结果；沙箱不可达时会自动降级本地 runtime，消息流里会显示系统提示。
 - 右侧点击「开始」轮询回显沙箱内浏览器 / 桌面截图（`/api/screenshot`，仅沙箱模式可用，本地模式显示降级提示）。
 - 任务运行在服务端后台（`/api/runs`），支持**停止（打断）**、**后台执行**（断开后可从任务芯片重新接入回放），互不干扰。
+- **对话在同一会话内累积上下文**：多轮消息共享历史（LangGraph checkpointer，服务端 session），不是每次发送都开新对话；点输入区「新会话」可清空上下文重新开始。
 
 默认任务：调研 AI 编程助手市场，生成 `/home/gem/report.md` 与单文件 `/home/gem/report.html`。
 

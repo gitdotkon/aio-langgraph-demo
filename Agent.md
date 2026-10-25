@@ -15,7 +15,7 @@ Agent 角色：**市场调研分析师**，在沙箱内调研并产出报告；�
 
 | 文件 | 职责 |
 |------|------|
-| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`）、`sandbox_reachable()` 探测、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent()` —— CLI 与 Web 共用的唯一事实源 |
+| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`）、`sandbox_reachable()` 探测、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
 | `sandbox_backend.py` | `AIOSandboxBackend`：实现 DeepAgents `BaseSandbox` 协议，把 execute/读写文件转发到沙箱；构造时打开持久 shell 会话（阻塞网络调用），用完必须 `close()` |
 | `main.py` | CLI 入口：流式打印 agent 执行过程 |
 | `web_app.py` | FastAPI 后端（端口 7860）：后台任务 runs + SSE + 沙箱代理接口 |
@@ -30,6 +30,7 @@ POST /api/runs {message} → asyncio.create_task(_execute_run)
 ```
 
 - 运行与 HTTP 连接解耦：断线不停止任务；`GET /api/runs/{id}/stream` 先回放后跟新，可多端接入。
+- **会话上下文：同一 session 内多轮对话共享历史**。全局 `MemorySaver` checkpointer + 服务端当前 `session_id` 作为 LangGraph `thread_id`，每次 run 都追加到同一 thread；`POST /api/session/new` 重置（换新 id + 新建 MemorySaver）。检查点仅内存态，服务重启后历史丢失。
 - 降级发生时 run 事件流开头会插入一条 `role=system` 提示，前端以提示样式渲染。
 - 停止 = `task.cancel()` → `CancelledError` → status `cancelled`；`finally` 中 `shield(backend.close)`（LocalShellBackend 无 close，用 getattr 保护）。
 - 状态机：`running → done | error | cancelled`（`cancelling` 为过渡态）。
@@ -38,12 +39,13 @@ POST /api/runs {message} → asyncio.create_task(_execute_run)
 
 | 端点 | 沙箱模式 | 本地降级模式 |
 |------|----------|--------------|
-| `POST /api/runs` / `GET /api/runs/{id}/stream` / `POST /api/runs/{id}/stop` / `GET /api/runs` | 后台任务生命周期（两种模式相同） | 同左，事件流开头多一条 system 降级提示 |
+| `POST /api/runs` / `GET /api/runs/{id}/stream` / `POST /api/runs/{id}/stop` / `GET /api/runs` | 后台任务生命周期（两种模式相同；body 可带 session_id 但服务端统一用当前会话） | 同左，事件流开头多一条 system 降级提示 |
+| `POST /api/session/new` | 重置会话：返回新 `session_id`，清空 checkpointer（上一轮上下文不再携带） | 同左 |
 | `GET /api/screenshot` | 沙箱桌面 PNG（`client.browser.screenshot()` 是 `Iterator[bytes]`，需聚合；`to_thread` 包装） | 直接 503（无沙箱画面） |
 | `GET /api/files?path=` | 列目录（`list_path`），**过滤隐藏项**，目录在前按名排序 | `os.scandir(local_workspace)`，同构 JSON，path 限制在工作区内 |
 | `GET /api/file?path=` | 读文件（`read_file`，0–6000 行） | `Path.read_text`（限工作区内） |
 | `POST /api/open {path}` | 沙箱内 Chrome 打开：`DISPLAY=:99.0 nohup /opt/browser/chrome …`；path 须在 `/home/gem/` 下 | 宿主机默认浏览器打开 `file://`（`webbrowser.open`） |
-| `GET /api/config` | `{sandbox_url, sandbox_reachable, mode, working_dir, default_task}` | mode=`local`，working_dir=本地工作区 |
+| `GET /api/config` | `{sandbox_url, sandbox_reachable, mode, working_dir, default_task, session_id}` | mode=`local`，working_dir=本地工作区 |
 
 ## 运行时选择与本地降级（实测约定）
 

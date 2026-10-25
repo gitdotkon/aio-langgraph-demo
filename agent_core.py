@@ -207,11 +207,16 @@ def open_backend(client: Sandbox | None = None):
     return backend
 
 
-def create_agent(backend):
-    """创建 DeepAgents 深度智能体；系统提示词随后端模式（沙箱/本地）自动调整。"""
+def create_agent(backend, *, checkpointer=None):
+    """创建 DeepAgents 深度智能体；系统提示词随后端模式（沙箱/本地）自动调整。
+
+    传入 checkpointer（如 langgraph MemorySaver）并按 thread_id 调用时，
+    同一会话的多轮对话会共享历史消息上下文；不传则每次运行无状态。
+    """
     sandbox_mode = getattr(backend, "mode", "sandbox") == "sandbox"
     return create_deep_agent(
         system_prompt=build_system_prompt(backend.working_dir, sandbox_mode=sandbox_mode),
         model=build_model(),
         backend=backend,
+        checkpointer=checkpointer,
     )

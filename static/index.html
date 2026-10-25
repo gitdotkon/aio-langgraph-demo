@@ -391,6 +391,7 @@
     <div class="c-app__logo" aria-hidden="true">AI</div>
     <h1 class="c-app__title">AIO Sandbox · DeepAgents 交互界面</h1>
     <span class="c-app__meta" id="sandboxMeta">sandbox: -</span>
+    <span class="c-app__meta" id="sessionMeta" title="当前会话 id：同一会话内多轮对话共享上下文">会话 -</span>
   </header>
 
   <div class="c-app__body">
@@ -409,6 +410,7 @@
           placeholder="描述你要 Agent 完成的任务… (Enter 发送 / Shift+Enter 换行)"
           aria-label="消息输入"></textarea>
         <div class="c-composer__actions">
+          <button class="c-btn c-btn--ghost" id="newSession" type="button" title="清空对话并开启新会话（不再携带之前的上下文）">新会话</button>
           <button class="c-btn" id="send" type="submit">发送</button>
           <button class="c-btn c-btn--danger" id="stop" type="button" disabled title="打断当前任务">停止</button>
           <button class="c-btn c-btn--ghost" id="background" type="button" disabled title="转入后台继续运行">后台执行</button>
@@ -489,9 +491,11 @@
   const sendBtn = document.getElementById("send");
   const empty = log.querySelector(".c-empty");
 
-  // ---- 运行模式展示（沙箱优先，不可达时降级本地 runtime）----
+  // ---- 会话：同一 session 内多轮对话共享上下文（服务端 LangGraph thread）----
+  let SESSION_ID = "-";
   fetch("/api/config").then(r => r.json()).then(c => {
     const meta = document.getElementById("sandboxMeta");
+    SESSION_ID = c.session_id || SESSION_ID;
     if (c.mode === "local") {
       meta.textContent = "⚠ 本地模式（沙箱不可达）· 工作目录: " + (c.working_dir || "-");
       // 本地模式无沙箱桌面，禁用浏览器画面回显
@@ -502,6 +506,8 @@
     } else {
       meta.textContent = "sandbox: " + c.sandbox_url + " · 沙箱模式";
     }
+    const sEl = document.getElementById("sessionMeta");
+    if (sEl) sEl.textContent = "会话 " + SESSION_ID;
   }).catch(() => {});
 
   // ---- 渲染辅助 ----
@@ -515,6 +521,7 @@
   function scrollBottom() { log.scrollTop = log.scrollHeight; }
 
   function addUser(text) {
+    if (!text) return;   // 回放空消息时跳过，避免空气泡
     clearEmpty();
     const m = el("div", "c-msg c-msg--user");
     m.appendChild(el("div", "c-msg__role", "你"));
@@ -628,11 +635,14 @@
     setRunningUI(false);
   }
 
-  // 连接到某个 run：清空并从头回放事件
+  // 连接到某个 run：会话内追加到现有记录，再回放该 run 的事件
   function attach(runId) {
+    if (runId === currentRunId && es) return;  // 重复点击同一芯片不重连
     detach();
     currentRunId = runId;
-    log.innerHTML = "";
+    if (log.querySelector(".c-msg")) {
+      addSystemNote("↩ 回到任务 " + runId + "（事件从头回放）");
+    }
     showTyping();
     setRunningUI(true);
     es = new EventSource("/api/runs/" + runId + "/stream");
@@ -660,7 +670,7 @@
       const r = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, session_id: SESSION_ID }),
       });
       if (!r.ok) { addError("启动失败：HTTP " + r.status); setRunningUI(false); return; }
       const { run_id } = await r.json();
@@ -739,6 +749,24 @@
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     startRun(input.value.trim());
+  });
+
+  // ---- 新会话：重置服务端 thread 并清空聊天区 ----
+  const EMPTY_HTML =
+    '<div class="c-empty">' +
+    '<div class="c-empty__title">向 Agent 提问</div>' +
+    "<div>输入任务，右侧实时查看沙箱浏览器画面。同一会话内多轮对话共享上下文；示例：直接留空发送即可运行默认市场调研任务。</div></div>";
+  document.getElementById("newSession").addEventListener("click", async () => {
+    if (attached) addSystemNote("请先停止或将当前任务转入后台，再开启新会话");
+    if (currentRunId) { detach(); currentRunId = null; pollRuns(); }
+    try {
+      const r = await fetch("/api/session/new", { method: "POST" });
+      if (r.ok) SESSION_ID = (await r.json()).session_id || SESSION_ID;
+    } catch (_) {}
+    log.innerHTML = EMPTY_HTML;
+    const sEl = document.getElementById("sessionMeta");
+    if (sEl) sEl.textContent = "会话 " + SESSION_ID;
+    addSystemNote("✨ 已开启新会话，不再携带之前的对话上下文");
   });
 
   // ---- 沙箱画面轮询 ----

@@ -24,6 +24,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel
 
 load_dotenv()
@@ -53,6 +54,10 @@ async def lifespan(app: FastAPI):
     # session is created per chat run (see /api/chat) to avoid idle timeouts.
     app.state.client = create_client()
     app.state.sandbox_url = sandbox_url()
+    # 会话检查点：同一 session_id（LangGraph thread_id）内的多轮对话共享上下文；
+    # 仅内存态，服务重启后历史丢失。
+    app.state.checkpointer = MemorySaver()
+    app.state.session_id = uuid.uuid4().hex[:12]
     mode = "sandbox" if sandbox_reachable() else "local"
     print(f"[runtime] 沙箱可达性探测: mode={mode} (url={app.state.sandbox_url})")
     yield
@@ -64,6 +69,7 @@ app = FastAPI(title="AIO DeepAgents UI", lifespan=lifespan)
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str | None = None  # 兼容旧客户端；服务端统一使用当前会话 id
 
 
 class OpenRequest(BaseModel):
@@ -77,11 +83,12 @@ class _Run:
     later reconnect and replay them. `task.cancel()` interrupts the agent.
     """
 
-    __slots__ = ("id", "message", "events", "status", "task")
+    __slots__ = ("id", "message", "session_id", "events", "status", "task")
 
-    def __init__(self, run_id: str, message: str):
+    def __init__(self, run_id: str, message: str, session_id: str):
         self.id = run_id
         self.message = message
+        self.session_id = session_id
         # The user's own message is the first event, so a reconnecting client
         # re-renders the full transcript (including it) from scratch.
         self.events: list[dict] = [{"role": "user", "content": message}]
@@ -152,11 +159,12 @@ async def _execute_run(run: _Run):
                 "role": "system",
                 "content": f"沙箱不可达，本次任务已降级到本地 runtime（工作目录 {backend.working_dir}）",
             })
-        agent = create_agent(backend)
+        agent = create_agent(backend, checkpointer=app.state.checkpointer)
 
         seen = 0
         async for chunk in agent.astream(
             {"messages": [{"role": "user", "content": run.message}]},
+            config={"configurable": {"thread_id": run.session_id}},
             stream_mode="values",
         ):
             msgs = chunk.get("messages", []) if isinstance(chunk, dict) else []
@@ -197,7 +205,16 @@ async def get_config():
         "mode": mode,
         "working_dir": wd,
         "default_task": default_task(wd),
+        "session_id": app.state.session_id,
     }
+
+
+@app.post("/api/session/new")
+async def new_session():
+    """开启新会话：换 thread_id 并清空检查点，上一轮上下文不再携带。"""
+    app.state.checkpointer = MemorySaver()
+    app.state.session_id = uuid.uuid4().hex[:12]
+    return {"session_id": app.state.session_id}
 
 
 @app.post("/api/runs")
@@ -206,7 +223,7 @@ async def start_run(req: ChatRequest):
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Empty message")
     run_id = uuid.uuid4().hex[:8]
-    run = _Run(run_id, req.message)
+    run = _Run(run_id, req.message, app.state.session_id)
     RUNS[run_id] = run
     run.task = asyncio.create_task(_execute_run(run))
     return {"run_id": run_id}
