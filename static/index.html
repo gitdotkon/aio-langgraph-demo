@@ -149,6 +149,10 @@
 
   /* 工具调用步骤 */
   .c-step { align-self: flex-start; width: min(820px, 100%); display: flex; flex-direction: column; gap: 6px; }
+  /* 执行细节卡：工具调用/返回合并折叠，聊天流只保留计划与步骤状态 */
+  .c-exec { align-self: flex-start; width: min(820px, 100%); }
+  .c-exec__list { padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+  .c-exec__row { display: flex; flex-direction: column; gap: 4px; }
   .c-chip {
     --c-chip-bg: var(--c-tool);
     display: inline-flex; align-items: center; gap: 8px;
@@ -535,32 +539,51 @@
     m.appendChild(el("div", null, text));
     log.appendChild(m); scrollBottom();
   }
-  function addToolCall(name, args) {
-    const wrap = el("div", "c-step");
+  function addExecRow(inner, summaryText) {
+    if (!execCard) {
+      execCard = el("details", "c-detail c-exec");
+      execSummary = el("summary", null, "🛠 执行细节");
+      execList = el("div", "c-exec__list");
+      execCard.append(execSummary, execList);
+      log.appendChild(execCard);
+    }
+    const row = el("div", "c-exec__row");
+    row.appendChild(inner);
+    if (summaryText) {
+      const d = el("details", "c-detail");
+      d.appendChild(el("summary", null, summaryText));
+      row.appendChild(d);
+    }
+    execList.appendChild(row);
+    execN += 1;
+    execSummary.textContent = "🛠 执行细节（" + execN + " 步）";
+    scrollBottom();
+  }
+  function addToolCallToCard(name, args) {
     const chip = el("span", "c-chip");
     chip.appendChild(el("span", "c-chip__dot"));
-    chip.appendChild(el("span", null, "调用工具 · " + name));
-    wrap.appendChild(chip);
+    chip.appendChild(el("span", null, "调用 " + name));
+    let summaryText = "查看参数";
     try {
-      const d = el("details", "c-detail");
-      d.appendChild(el("summary", null, "参数 args"));
-      d.appendChild(el("pre", "c-detail__body", JSON.stringify(args, null, 2)));
-      wrap.appendChild(d);
+      const s = JSON.stringify(args);
+      summaryText = "参数 (" + (s ? s.length : 0) + " 字符)";
     } catch (e) {}
-    log.appendChild(wrap); scrollBottom();
+    addExecRow(chip, summaryText);
+    if (execList) {
+      const pre = el("pre", "c-detail__body", JSON.stringify(args, null, 2));
+      execList.lastElementChild.querySelector("details.c-detail").appendChild(pre);
+    }
   }
-  function addToolResult(name, content) {
-    const wrap = el("div", "c-step");
+  function addToolResultToCard(name, content) {
     const chip = el("span", "c-chip c-chip--result");
     chip.appendChild(el("span", "c-chip__dot"));
-    chip.appendChild(el("span", null, "工具返回 · " + name));
-    wrap.appendChild(chip);
-    const d = el("details", "c-detail");
-    const preview = (content || "").length > 400 ? content.slice(0, 400) + " …" : content;
-    d.appendChild(el("summary", null, "查看输出 (" + (content || "").length + " 字符)"));
-    d.appendChild(el("pre", "c-detail__body", preview));
-    wrap.appendChild(d);
-    log.appendChild(wrap); scrollBottom();
+    chip.appendChild(el("span", null, "返回 · " + name));
+    const preview = (content || "").length > 400 ? (content || "").slice(0, 400) + " …" : content;
+    addExecRow(chip, "查看输出 (" + (content || "").length + " 字符)");
+    if (execList) {
+      const pre = el("pre", "c-detail__body", preview);
+      execList.lastElementChild.querySelector("details.c-detail").appendChild(pre);
+    }
   }
   function addError(text) {
     const m = el("div", "c-msg c-msg--error");
@@ -595,11 +618,11 @@
       addAssistant(obj.content);
       if (obj.content) pushLog("ai", "Agent", obj.content);
       (obj.tool_calls || []).forEach(tc => {
-        addToolCall(tc.name, tc.args);
+        addToolCallToCard(tc.name, tc.args);
         pushLog("tool", "调用 " + tc.name, summarizeArgs(tc.args));
       });
     } else if (obj.role === "tool") {
-      addToolResult(obj.name, obj.content);
+      addToolResultToCard(obj.name, obj.content);
       pushLog("result", "返回 " + obj.name, (obj.content || "").slice(0, 300));
     } else if (obj.role === "system") {
       addSystem(obj.content);
@@ -636,10 +659,12 @@
   }
 
   // 连接到某个 run：会话内追加到现有记录，再回放该 run 的事件
+  let execCard = null, execSummary = null, execList = null, execN = 0;
   function attach(runId) {
     if (runId === currentRunId && es) return;  // 重复点击同一芯片不重连
     detach();
     currentRunId = runId;
+    execCard = execSummary = execList = null; execN = 0;  // 每个 run 一张执行细节卡
     if (log.querySelector(".c-msg")) {
       addSystemNote("↩ 回到任务 " + runId + "（事件从头回放）");
     }

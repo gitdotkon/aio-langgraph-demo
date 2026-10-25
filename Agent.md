@@ -15,7 +15,7 @@ Agent 角色：**市场调研分析师**，在沙箱内调研并产出报告；�
 
 | 文件 | 职责 |
 |------|------|
-| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`）、`sandbox_reachable()` 探测、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
+| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`，含**先 Plan 后执行协议**）、`sandbox_reachable()` 探测、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
 | `sandbox_backend.py` | `AIOSandboxBackend`：实现 DeepAgents `BaseSandbox` 协议，把 execute/读写文件转发到沙箱；构造时打开持久 shell 会话（阻塞网络调用），用完必须 `close()` |
 | `main.py` | CLI 入口：流式打印 agent 执行过程 |
 | `web_app.py` | FastAPI 后端（端口 7860）：后台任务 runs + SSE + 沙箱代理接口 |
@@ -31,6 +31,7 @@ POST /api/runs {message} → asyncio.create_task(_execute_run)
 
 - 运行与 HTTP 连接解耦：断线不停止任务；`GET /api/runs/{id}/stream` 先回放后跟新，可多端接入。
 - **会话上下文：同一 session 内多轮对话共享历史**。全局 `MemorySaver` checkpointer + 服务端当前 `session_id` 作为 LangGraph `thread_id`，每次 run 都追加到同一 thread；`POST /api/session/new` 重置（换新 id + 新建 MemorySaver）。检查点仅内存态，服务重启后历史丢失。
+- **先 Plan 后执行**：系统提示词内置执行协议——第一条回复只输出编号执行计划（不发工具消息），随后不等确认自动执行到底；中间回复不复述执行细节，每步最多一行「✅ 步骤 N 完成」，最后简短总结+产物路径。前端配套：工具调用/返回合并进单张可折叠的「🛠 执行细节」卡（每个 run 一张），聊天流只保留计划、步骤状态与总结。
 - 降级发生时 run 事件流开头会插入一条 `role=system` 提示，前端以提示样式渲染。
 - 停止 = `task.cancel()` → `CancelledError` → status `cancelled`；`finally` 中 `shield(backend.close)`（LocalShellBackend 无 close，用 getattr 保护）。
 - 状态机：`running → done | error | cancelled`（`cancelling` 为过渡态）。

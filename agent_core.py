@@ -28,6 +28,16 @@ SANDBOX_WORKING_DIR = "/home/gem"
 _SYSTEM_PROMPT = """You are a market research analyst with sandbox access.
 Your working directory is {WORKDIR}. Write files there.
 
+## 执行协议：先 Plan，后执行（严格遵守）
+1. 收到任务后，第一条回复必须先输出执行计划：Markdown 编号列表（3–6 步，
+   每步一句话）。这条计划回复里不得调用任何工具。
+2. 输出计划后**不要等待用户确认**，下一轮立即开始按计划执行到底；
+   可以连续多轮调用工具，但回复消息里**不要**复述命令、代码、
+   网页内容等执行细节（工具过程本身会展示这些）。
+3. 每个计划步骤完成后，最多用一行标记状态，如「✅ 步骤 2 完成：<几个词>」。
+4. 全部步骤完成后输出简短总结：关键结论 + 产物文件路径；计划以外的细节
+   不展开。
+
 You can browse the web by fetching pages inside the sandbox.
 Use the `execute` tool to run Python scripts or curl commands.
 
@@ -72,8 +82,8 @@ print(text[:3000])
 ```
 
 {METHOD3}
-Workflow for market research:
-1. Use httpx/curl to fetch search results and web pages
+Workflow for market research（仍需先按上述执行协议输出计划）:
+1. Fetch search results and web pages with httpx/curl
 2. Extract and analyze content from multiple sources
 3. Cross-reference data for accuracy
 4. Write a structured market research report to {WORKDIR}/report.md
@@ -115,7 +125,8 @@ result = client.browser.screenshot()
 _DEFAULT_TASK = (
     "请对 AI 编程助手市场进行调研（如 Cursor、GitHub Copilot、Windsurf 等产品），"
     "包括市场规模、主要玩家、产品特点、定价策略和竞争格局。"
-    "使用浏览器搜索相关资料，先将调研报告保存到 {WORKDIR}/report.md，"
+    "使用浏览器搜索相关资料。先列出执行计划，给出计划后不等确认、直接按计划逐步执行（不要报告执行细节），"
+    "先将调研报告保存到 {WORKDIR}/report.md，"
     "再按系统提示中的 HTML 规范生成排版精美的单文件报告，保存到 {WORKDIR}/report.html。"
 )
 
