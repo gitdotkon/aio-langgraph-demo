@@ -19,7 +19,8 @@ DeepAgents Agent (LangGraph)
 Agent 获得 write / edit / read / ls / glob / execute 等工具，
 所有操作都发生在 AIO Sandbox 的 Docker 容器里，与宿主机隔离。
 
-> **运行时降级**：默认使用沙箱。`agent_core.open_backend()` 会先 HTTP 探测
+> **运行时降级**：默认使用沙箱。启动时 `startup_check()` 会显式探测一次沙箱可达性并在日志中
+> 打印模式与原因；之后 `agent_core.open_backend()` 每次先 HTTP 探测
 > `SANDBOX_URL`（超时可用 `SANDBOX_PROBE_TIMEOUT` 调整，结果缓存 15s），
 > 沙箱连不通时自动降级为本地 runtime（deepagents `LocalShellBackend`），
 > 工作目录切换到项目下 `./local_workspace/`，提示词随之调整：

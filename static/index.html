@@ -495,24 +495,30 @@
   const sendBtn = document.getElementById("send");
   const empty = log.querySelector(".c-empty");
 
-  // ---- 会话：同一 session 内多轮对话共享上下文（服务端 LangGraph thread）----
+  // ---- 会话与启动状态：一次 /api/config 拉取全部模式信息 ----
+  // 服务端启动时已显式探测沙箱可达性；这里同步模式徽标、会话 id、
+  // 默认任务与文件面板根路径（本地模式必须用服务端 working_dir，否则 400）。
   let SESSION_ID = "-";
-  fetch("/api/config").then(r => r.json()).then(c => {
+  let DEFAULT_TASK = "";
+  const CONFIG_READY = fetch("/api/config").then(r => r.json()).then(c => {
     const meta = document.getElementById("sandboxMeta");
     SESSION_ID = c.session_id || SESSION_ID;
+    DEFAULT_TASK = c.default_task || DEFAULT_TASK;
     if (c.mode === "local") {
-      meta.textContent = "⚠ 本地模式（沙箱不可达）· 工作目录: " + (c.working_dir || "-");
-      // 本地模式无沙箱桌面，禁用浏览器画面回显
+      const reason = c.sandbox_error ? "（" + c.sandbox_error.split(":")[0] + "）" : "";
+      meta.textContent = "⚠ 本地模式（沙箱不可达" + reason + "）· 工作目录: " + (c.working_dir || "-");
+      // 本地模式无沙箱桌面，禁用浏览器画面回显；文件面板改指向本地工作区
       const btn = document.getElementById("toggleScreen");
       if (btn) { btn.disabled = true; btn.textContent = "不可用"; }
       const ph = document.getElementById("screenPlaceholder");
       if (ph) ph.textContent = "当前为本地模式，无沙箱浏览器画面回显。";
+      if (c.working_dir) ROOT_PATH = c.working_dir;
     } else {
       meta.textContent = "sandbox: " + c.sandbox_url + " · 沙箱模式";
     }
     const sEl = document.getElementById("sessionMeta");
     if (sEl) sEl.textContent = "会话 " + SESSION_ID;
-  }).catch(() => {});
+  });
 
   // ---- 渲染辅助 ----
   function el(tag, cls, text) {
@@ -637,8 +643,6 @@
   const stopBtn = document.getElementById("stop");
   const bgBtn = document.getElementById("background");
   const bgbar = document.getElementById("bgbar");
-  let DEFAULT_TASK = "";
-  fetch("/api/config").then(r => r.json()).then(c => { DEFAULT_TASK = c.default_task || ""; }).catch(() => {});
 
   let currentRunId = null;
   let es = null;         // EventSource
@@ -887,7 +891,7 @@
   const viewerLang = document.getElementById("viewerLang");
   const viewerToggle = document.getElementById("viewerToggle");
   const viewerBody = document.getElementById("viewerBody");
-  const ROOT_PATH = "/home/gem";
+  let ROOT_PATH = "/home/gem";  // 本地模式启动时会被 /api/config 的 working_dir 覆盖
   let currentFile = null;   // {name, path, content, kind, lang, error}
   let richMode = true;
 
@@ -1179,8 +1183,8 @@
     window.addEventListener("resize", () => { if (window.innerWidth <= 900) return; setWidth(currentWidth()); });
   })();
 
-  // 启动时预拉一次文件数，使徽章初始不为 0
-  refreshFiles();
+  // 启动时先等 /api/config 就绪（确定模式与根路径）再预拉一次文件数
+  CONFIG_READY.catch(() => {}).then(refreshFiles);
 
   input.focus();
 })();

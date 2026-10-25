@@ -151,28 +151,62 @@ def local_workspace() -> Path:
 
 # (url, 结果, 过期时间戳)；只缓存默认 SANDBOX_URL 的探测结果
 _probe_cache: tuple[str, bool, float] | None = None
+# 最近一次真实探测失败的原因（不可达时供启动报告/UI 展示）
+_probe_error: str | None = None
 _PROBE_TTL = 15.0
 
 
-def sandbox_reachable(url: str | None = None) -> bool:
+def sandbox_reachable(url: str | None = None, *, force: bool = False) -> bool:
     """HTTP 探测沙箱是否连通。
 
     收到任意 HTTP 响应（含 404/5xx）即视为可达；只有连接失败/超时/代理
-    错误才视为不可达。结果缓存 15s，避免每个 Web 请求都探测一次。
+    错误才视为不可达。结果缓存 15s，避免每个 Web 请求都探测一次；
+    启动检查等需要实时结果的场景传 force=True 跳过缓存。
     """
-    global _probe_cache
+    global _probe_cache, _probe_error
     url = url or sandbox_url()
     now = time.monotonic()
-    if _probe_cache is not None and _probe_cache[0] == url and now < _probe_cache[2]:
+    if (
+        not force
+        and _probe_cache is not None
+        and _probe_cache[0] == url
+        and now < _probe_cache[2]
+    ):
         return _probe_cache[1]
     timeout = float(os.getenv("SANDBOX_PROBE_TIMEOUT", "3"))
     try:
         httpx.get(url, timeout=timeout, follow_redirects=True)
-        ok = True
-    except httpx.HTTPError:
-        ok = False
+        ok, err = True, None
+    except httpx.HTTPError as exc:
+        ok, err = False, f"{type(exc).__name__}: {exc}"
+    _probe_error = err
     _probe_cache = (url, ok, now + _PROBE_TTL)
     return ok
+
+
+def startup_check() -> dict:
+    """启动时显式探测沙箱可达性，返回结果并给出人话报告（CLI / Web 共用）。
+
+    含阻塞网络调用（httpx），异步上下文请用 asyncio.to_thread()。
+    """
+    reachable = sandbox_reachable(force=True)
+    url = sandbox_url()
+    working_dir = SANDBOX_WORKING_DIR if reachable else str(local_workspace())
+    if reachable:
+        report = [f"[runtime] ✅ 沙箱可达: {url} → 沙箱模式（工作目录 {working_dir}）"]
+    else:
+        report = [
+            f"[runtime] ⚠️ 沙箱不可达（{url}）: {_probe_error or '连接失败'}",
+            f"[runtime]    → 已降级本地模式启动，工作目录 {working_dir}（无沙箱隔离；截图/沙箱桌面不可用）",
+        ]
+    return {
+        "reachable": reachable,
+        "mode": "sandbox" if reachable else "local",
+        "working_dir": working_dir,
+        "url": url,
+        "error": _probe_error,
+        "report": report,
+    }
 
 
 def sandbox_url() -> str:

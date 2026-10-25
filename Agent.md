@@ -15,7 +15,7 @@ Agent 角色：**市场调研分析师**，在沙箱内调研并产出报告；�
 
 | 文件 | 职责 |
 |------|------|
-| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`，含**先 Plan 后执行协议**）、`sandbox_reachable()` 探测、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
+| `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`，含**先 Plan 后执行协议**）、`sandbox_reachable(force=)` 探测、`startup_check()` 启动检查（CLI/Web 共用，打印模式与降级原因）、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
 | `sandbox_backend.py` | `AIOSandboxBackend`：实现 DeepAgents `BaseSandbox` 协议，把 execute/读写文件转发到沙箱；构造时打开持久 shell 会话（阻塞网络调用），用完必须 `close()` |
 | `main.py` | CLI 入口：流式打印 agent 执行过程 |
 | `web_app.py` | FastAPI 后端（端口 7860）：后台任务 runs + SSE + 沙箱代理接口 |
@@ -46,11 +46,12 @@ POST /api/runs {message} → asyncio.create_task(_execute_run)
 | `GET /api/files?path=` | 列目录（`list_path`），**过滤隐藏项**，目录在前按名排序 | `os.scandir(local_workspace)`，同构 JSON，path 限制在工作区内 |
 | `GET /api/file?path=` | 读文件（`read_file`，0–6000 行） | `Path.read_text`（限工作区内） |
 | `POST /api/open {path}` | 沙箱内 Chrome 打开：`DISPLAY=:99.0 nohup /opt/browser/chrome …`；path 须在 `/home/gem/` 下 | 宿主机默认浏览器打开 `file://`（`webbrowser.open`） |
-| `GET /api/config` | `{sandbox_url, sandbox_reachable, mode, working_dir, default_task, session_id}` | mode=`local`，working_dir=本地工作区 |
+| `GET /api/config` | `{sandbox_url, sandbox_reachable, mode, working_dir, default_task, session_id, sandbox_error}` | mode=`local`，working_dir=本地工作区，sandbox_error=启动探测失败原因 |
 
 ## 运行时选择与本地降级（实测约定）
 
-- 探测：`sandbox_reachable()` 用 httpx GET `SANDBOX_URL` 根路径，收到任意 HTTP 响应即视为可达；超时/连接失败视为不可达。结果缓存 15s（`SANDBOX_PROBE_TIMEOUT` 控制探测超时）。
+- 探测：`sandbox_reachable()` 用 httpx GET `SANDBOX_URL` 根路径，收到任意 HTTP 响应即视为可达；超时/连接失败视为不可达。结果缓存 15s（`SANDBOX_PROBE_TIMEOUT` 控制探测超时）；`force=True` 跳过缓存。
+- 启动检查：`startup_check()`（CLI 与 web_app lifespan 均调用）启动时强制真实探测，打印模式与失败原因（如 `ConnectError: no route to host`）；最近一次不可达原因存在 `_probe_error`，经 `/api/config` 的 `sandbox_error` 字段透出到前端徽标。
 - 降级后端：`deepagents.backends.LocalShellBackend(root_dir=./local_workspace, virtual_mode=False, inherit_env=True)`，并挂 `mode="local"` / `working_dir` 属性；`AIOSandboxBackend` 对应 `mode="sandbox"`。
 - 提示词随之变：系统提示词中工作目录用 `{WORKDIR}` 占位，沙箱专属的浏览器截图段（Method 3）仅沙箱模式注入。
 - 安全提示：本地模式**无隔离**，agent 以本机用户权限执行任意 shell 命令并能读写工作区文件，仅在可信任务/可信模型下使用。

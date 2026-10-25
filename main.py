@@ -1,10 +1,13 @@
 import asyncio
 import sys
 
-from agent_core import create_agent, default_task, open_backend
+from agent_core import create_agent, default_task, open_backend, startup_check
 
 
 async def main():
+    # 启动时先显式探测沙箱可达性，打印模式/降级原因（与 Web 形态一致）
+    for line in (await asyncio.to_thread(startup_check))["report"]:
+        print(line)
     # open_backend 优先连 AIO Sandbox，连不通自动降级本地 runtime
     backend = await asyncio.to_thread(open_backend)
     print(f"[runtime] mode={backend.mode} working_dir={backend.working_dir}")

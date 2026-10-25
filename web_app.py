@@ -38,6 +38,7 @@ from agent_core import (  # noqa: E402
     open_backend,
     sandbox_reachable,
     sandbox_url,
+    startup_check,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -58,8 +59,12 @@ async def lifespan(app: FastAPI):
     # 仅内存态，服务重启后历史丢失。
     app.state.checkpointer = MemorySaver()
     app.state.session_id = uuid.uuid4().hex[:12]
-    mode = "sandbox" if sandbox_reachable() else "local"
-    print(f"[runtime] 沙箱可达性探测: mode={mode} (url={app.state.sandbox_url})")
+    # 启动时显式探测沙箱可达性（force 跳过缓存），打印模式与降级原因；
+    # 探测为阻塞网络调用，放 to_thread 避免阻塞事件循环启动。
+    info = await asyncio.to_thread(startup_check)
+    app.state.startup = info
+    for line in info["report"]:
+        print(line)
     yield
     # Nothing to tear down on the client; per-run backends close themselves.
 
@@ -206,6 +211,8 @@ async def get_config():
         "working_dir": wd,
         "default_task": default_task(wd),
         "session_id": app.state.session_id,
+        # 启动检查时的不可达原因（如 ConnectError），供前端本地模式提示展示
+        "sandbox_error": getattr(app.state, "startup", {}).get("error"),
     }
 
 
