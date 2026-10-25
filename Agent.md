@@ -67,6 +67,7 @@ POST /api/runs {message} → asyncio.create_task(_execute_run)
 ## 前端约定（改 static/index.html 前必读）
 
 - BEM + `c-` 前缀类名；主题走 `:root --c-*` 变量；单文件、无 CDN、内联 SVG 图标（与个人技能 `html-ui-snippets`/`web-page-generator` 同一套规范）。
+- **当前主题为 Apple 浅色风（参考 apple.com.cn）**：背景 `--c-bg:#fff` / 面板 `--c-surface:#f5f5f7`、正文 `--c-fg:#1d1d1f`、次要 `#6e6e73`、边框 `#d2d2d7`、苹果蓝 `--c-primary:#0071e3`。特征：顶栏毛玻璃吸顶（`backdrop-filter:saturate(180%) blur(20px)`）、按钮/胶囊统一 `border-radius:980px`、卡片大圆角 + 微阴影（`0 2px 10px rgba(0,0,0,.05)`）取代重边框、tabs 为分段控件（segmented control）风格、用户气泡蓝底白字、代码高亮走 GitHub Light。改色只动 `:root` 变量，勿散写硬编码色值。
 - 布局高度链已修平：`.c-app__body` 用 `minmax(0,1fr)` 行 + 各滚动容器 `min-height:0`，底部输入区/状态条 `flex:none`；新增区块滚动容器时要沿用此模式，`overscroll-behavior:contain`。
 - 左右栏宽度可拖拽：右栏宽度 = `--panel-w` CSS 变量（`#splitter` 指针拖拽，localStorage 记忆，≤900px 退化为上下堆叠）。
 - JS 全部在一个 IIFE 内，无全局污染；markdown 渲染、代码高亮、目录树均为手写零依赖实现。
