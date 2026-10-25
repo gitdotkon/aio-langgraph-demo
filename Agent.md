@@ -2,6 +2,8 @@
 
 面向 AI 编码助手与开发者的项目上下文文档。使用说明见 [README.md](README.md)。
 
+> **维护约定**：本文件的每次修改都必须随当次改动一起提交 git（独立 commit 或与代码同 commit 均可），保证项目上下文与实现同步、可追溯。
+
 ## 项目是什么
 
 LangGraph/DeepAgents 智能体 + AIO Sandbox（Docker 容器，当前跑在局域网机器
