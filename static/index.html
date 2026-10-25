@@ -399,6 +399,58 @@
   .c-log__tag--error { color: #c4322b; }
   .c-log__msg { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--c-fg); }
   .c-logs__empty { margin: auto; color: var(--c-fg-muted); font-size: 13px; text-align: center; padding: 20px; }
+
+  /* ============ A2UI 生成式界面（声明式子集渲染器） ============ */
+  .c-a2ui {
+    align-self: flex-start; width: min(820px, 100%);
+    background: #ffffff; border: 1px solid rgba(0, 0, 0, .08);
+    border-radius: var(--c-radius); box-shadow: 0 2px 12px rgba(0, 0, 0, .06);
+    padding: 12px 16px 14px;
+    display: flex; flex-direction: column; gap: 9px;
+    animation: c-fade .18s ease;
+  }
+  .c-a2ui__head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--c-fg-muted);
+  }
+  .c-a2ui__badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 9px; border-radius: 980px; background: var(--c-surface);
+    border: 1px solid rgba(0, 0, 0, .06); font-weight: 600;
+  }
+  .c-a2ui__done { margin-left: auto; color: #248a3d; font-weight: 600; text-transform: none; letter-spacing: 0; }
+  .c-a2ui__heading { font-size: 15px; font-weight: 700; color: var(--c-fg); line-height: 1.4; }
+  .c-a2ui__text { color: var(--c-fg); white-space: pre-wrap; word-break: break-word; }
+  .c-a2ui__status {
+    display: flex; gap: 8px; align-items: center;
+    padding: 7px 12px; border-radius: var(--c-radius-sm); font-size: 12px;
+  }
+  .c-a2ui__status::before { content: "●"; font-size: 10px; }
+  .c-a2ui__status--ok    { background: #f0fbf2; color: #248a3d; border: 1px solid #b7e4c2; }
+  .c-a2ui__status--warn  { background: #fff8eb; color: #9a6700; border: 1px solid #ffe1a8; }
+  .c-a2ui__status--error { background: #fff2f2; color: #b3241f; border: 1px solid #ffc9c7; }
+  .c-a2ui__list { margin: 0; padding-left: 18px; }
+  .c-a2ui__list li { margin: 3px 0; }
+  .c-a2ui__actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+  .c-a2ui__actions .c-btn { height: 32px; padding: 4px 14px; font-size: 12px; }
+  .c-a2ui__form { display: flex; flex-direction: column; gap: 9px; }
+  .c-a2ui__field label { display: block; font-size: 11px; color: var(--c-fg-muted); margin-bottom: 3px; }
+  .c-a2ui__field label .c-a2ui__req { color: var(--c-error); }
+  .c-a2ui__field input[type="text"], .c-a2ui__field textarea, .c-a2ui__field select {
+    width: 100%; font: inherit; color: var(--c-fg); background: #fff;
+    border: 1px solid var(--c-border); border-radius: 10px; padding: 6px 10px;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .c-a2ui__field input[type="text"]:focus-visible, .c-a2ui__field textarea:focus-visible, .c-a2ui__field select:focus-visible {
+    outline: none; border-color: var(--c-primary); box-shadow: 0 0 0 3px rgba(0, 113, 227, .18);
+  }
+  .c-a2ui__field--check { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+  .c-a2ui__field--check label { margin: 0; display: inline-flex; align-items: center; gap: 4px; color: var(--c-fg); }
+  .c-a2ui__form .c-btn { align-self: flex-start; height: 32px; padding: 4px 16px; font-size: 12px; }
+  .c-a2ui__unknown { font-size: 11px; color: var(--c-fg-muted); font-style: italic; }
+  .c-a2ui--submitted { opacity: .72; }
+  .c-a2ui--submitted button, .c-a2ui--submitted input, .c-a2ui--submitted select, .c-a2ui--submitted textarea { pointer-events: none; }
 </style>
 </head>
 <body>
@@ -550,13 +602,175 @@
     m.appendChild(el("div", null, text));
     log.appendChild(m); scrollBottom();
   }
+  function msgNode(cls, role, text) {
+    const m = el("div", cls);
+    m.appendChild(el("div", "c-msg__role", role));
+    m.appendChild(el("div", null, text));
+    return m;
+  }
   function addAssistant(text) {
     if (!text) return;
-    const m = el("div", "c-msg c-msg--assistant");
-    m.appendChild(el("div", "c-msg__role", "Agent"));
-    m.appendChild(el("div", null, text));
-    log.appendChild(m); scrollBottom();
+    const chunks = splitA2UI(text);
+    if (!chunks.some(c => c.kind === "ui")) {   // 无 A2UI：保持原文本气泡
+      log.appendChild(msgNode("c-msg c-msg--assistant", "Agent", text));
+      scrollBottom();
+      return;
+    }
+    chunks.forEach(c => {
+      if (c.kind === "ui") { log.appendChild(c.node); return; }
+      const t = c.text.replace(/^\n+|\n+$/g, "");
+      if (t) log.appendChild(msgNode("c-msg c-msg--assistant", "Agent", t));
+    });
+    scrollBottom();
   }
+
+  // ---- A2UI 子集渲染器：```a2ui 围栏块 → 白名单组件卡，交互回传走 startRun ----
+  const A2UI_RE = /```a2ui[^\S\n]*\n([\s\S]*?)```/g;
+  function splitA2UI(text) {
+    const out = []; let last = 0, m;
+    A2UI_RE.lastIndex = 0;
+    while ((m = A2UI_RE.exec(text))) {
+      if (m.index > last) out.push({ kind: "text", text: text.slice(last, m.index) });
+      let node = null;
+      try { const spec = parseA2UI(m[1]); if (spec) node = buildA2UI(spec); } catch (e) {}
+      // 解析失败降级：原样当代码文本显示，绝不丢消息
+      out.push(node ? { kind: "ui", node } : { kind: "text", text: m[0] });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
+    return out;
+  }
+  function parseA2UI(json) {
+    const obj = JSON.parse(json);
+    const comps = obj && (Array.isArray(obj.components) ? obj.components
+      : (obj.a2ui && Array.isArray(obj.a2ui.components) ? obj.a2ui.components : null));
+    if (!comps || !comps.length) return null;
+    return { title: typeof obj.title === "string" ? obj.title : "", components: comps.slice(0, 8) };
+  }
+  function submitA2UI(card, action, payload) {
+    if (card.classList.contains("c-a2ui--submitted")) return;
+    const parts = Object.entries(payload).map(([k, v]) => k + "=" + v);
+    const msg = "[A2UI 交互] action=" + action + (parts.length ? "；" + parts.join("；") : "");
+    card.classList.add("c-a2ui--submitted");
+    const head = card.querySelector(".c-a2ui__head");
+    if (head) head.appendChild(el("span", "c-a2ui__done", "✅ 已提交，等待 Agent 继续"));
+    pushLog("send", "A2UI 交互", msg);
+    startRun(msg);
+  }
+  function buildA2UIForm(c) {
+    const form = el("div", "c-a2ui__form");
+    const fields = (Array.isArray(c.fields) ? c.fields : []).slice(0, 6);
+    const inputs = [];
+    fields.forEach(f => {
+      f = f || {};
+      const label = String(f.label || f.name || "字段");
+      const type = ["text", "textarea", "select", "checkbox"].indexOf(f.type) >= 0 ? f.type : "text";
+      const box = el("div", "c-a2ui__field" + (type === "checkbox" ? " c-a2ui__field--check" : ""));
+      if (type === "checkbox") {
+        box.appendChild(el("label", null, label + (f.required ? " *" : "")));
+        const options = (Array.isArray(f.options) && f.options.length ? f.options : ["是"]).slice(0, 8);
+        const cbs = [];
+        options.forEach(op => {
+          const lab = el("label");
+          const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = String(op);
+          lab.append(cb, document.createTextNode(" " + String(op)));
+          box.appendChild(lab); cbs.push(cb);
+        });
+        inputs.push({ label, get: () => cbs.filter(x => x.checked).map(x => x.value).join("、") || "（未选）" });
+      } else {
+        const lab = el("label");
+        lab.appendChild(document.createTextNode(label + " "));
+        if (f.required) lab.appendChild(el("span", "c-a2ui__req", "*"));
+        box.appendChild(lab);
+        let node;
+        if (type === "select") {
+          node = document.createElement("select");
+          const ph = document.createElement("option"); ph.value = ""; ph.textContent = String(f.placeholder || "请选择");
+          node.appendChild(ph);
+          (Array.isArray(f.options) ? f.options : []).slice(0, 12).forEach(op => {
+            const o = document.createElement("option"); o.value = String(op); o.textContent = String(op); node.appendChild(o);
+          });
+        } else if (type === "textarea") {
+          node = el("textarea"); node.rows = 2;
+          if (f.placeholder) node.placeholder = String(f.placeholder);
+        } else {
+          node = el("input"); node.type = "text";
+          if (f.placeholder) node.placeholder = String(f.placeholder);
+        }
+        box.appendChild(node);
+        inputs.push({ label, node, get: () => node.value.trim() || "（留空）" });
+      }
+      form.appendChild(box);
+    });
+    const btn = el("button", "c-btn", String(c.submitLabel || "提交并继续"));
+    btn.type = "button";
+    btn.addEventListener("click", () => {
+      const missing = inputs.find(i => i.node && i.node.value.trim() === "" && i.node.closest(".c-a2ui__field").querySelector(".c-a2ui__req"));
+      if (missing) { missing.node.focus(); missing.node.style.borderColor = "var(--c-error)"; return; }
+      const vals = {};
+      inputs.forEach(i => { vals[i.label] = i.get(); });
+      submitA2UI(form.closest(".c-a2ui"), String(c.action || "submit"), vals);
+    });
+    form.appendChild(btn);
+    return form;
+  }
+  function buildA2UI(spec) {
+    const card = el("div", "c-a2ui");
+    const head = el("div", "c-a2ui__head");
+    head.appendChild(el("span", "c-a2ui__badge", "🧩 A2UI"));
+    if (spec.title) head.appendChild(el("span", null, spec.title));
+    card.appendChild(head);
+    const actions = [];
+    spec.components.forEach(raw => {
+      const c = raw || {};
+      const t = c.type;
+      if (t === "heading") card.appendChild(el("div", "c-a2ui__heading", String(c.text == null ? "" : c.text)));
+      else if (t === "text") card.appendChild(el("div", "c-a2ui__text", String(c.text == null ? "" : c.text)));
+      else if (t === "status") {
+        const st = ["ok", "warn", "error"].indexOf(c.state) >= 0 ? c.state : "ok";
+        card.appendChild(el("div", "c-a2ui__status c-a2ui__status--" + st, String(c.text || "")));
+      }
+      else if (t === "list") {
+        const ul = el("ul", "c-a2ui__list");
+        (Array.isArray(c.items) ? c.items : []).slice(0, 20).forEach(it =>
+          ul.appendChild(el("li", null, typeof it === "string" ? it : String((it && it.text) || ""))));
+        card.appendChild(ul);
+      }
+      else if (t === "table") {
+        const cols = Array.isArray(c.columns) ? c.columns : [];
+        if (cols.length) {
+          const wrap = el("div", "c-md__tablewrap");
+          const tb = el("table", "c-md__table");
+          const trh = document.createElement("tr");
+          cols.forEach(h => { const th = document.createElement("th"); th.textContent = String(h); trh.appendChild(th); });
+          const thead = document.createElement("thead"); thead.appendChild(trh); tb.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          (Array.isArray(c.rows) ? c.rows : []).slice(0, 30).forEach(r => {
+            const tr = document.createElement("tr");
+            (Array.isArray(r) ? r : []).forEach(cell => { const td = document.createElement("td"); td.textContent = String(cell == null ? "" : cell); tr.appendChild(td); });
+            tbody.appendChild(tr);
+          });
+          tb.appendChild(tbody); wrap.appendChild(tb); card.appendChild(wrap);
+        }
+      }
+      else if (t === "button") {
+        const btn = el("button", "c-btn" + (c.style === "secondary" ? " c-btn--ghost" : ""), String(c.label || "确定"));
+        btn.type = "button";
+        btn.addEventListener("click", () => submitA2UI(card, String(c.action || "action"),
+          { "选择": String(c.value != null ? c.value : (c.label || "")) }));
+        actions.push(btn);
+      }
+      else if (t === "form") actions.push(buildA2UIForm(c));
+      else card.appendChild(el("div", "c-a2ui__unknown", "（不支持的组件类型：" + String(t || "?") + "）"));
+    });
+    if (actions.length) {
+      const row = el("div", "c-a2ui__actions");
+      actions.forEach(a => row.appendChild(a));
+      card.appendChild(row);
+    }
+    return card;
+  }
+
   function addExecRow(inner, summaryText) {
     if (!execCard) {
       execCard = el("details", "c-detail c-exec");

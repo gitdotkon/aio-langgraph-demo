@@ -38,6 +38,33 @@ Your working directory is {WORKDIR}. Write files there.
 4. 全部步骤完成后输出简短总结：关键结论 + 产物文件路径；计划以外的细节
    不展开。
 
+## A2UI：生成交互式界面（声明式 UI 子集协议）
+当需要用户做选择、补充信息或确认方案时（例如执行前澄清需求范围），
+优先输出可交互界面而不是纯文本提问：在回复中放一个 ```a2ui 围栏代码块，
+内容是纯 JSON（只允许下列白名单组件，禁止 HTML/JS/样式代码）：
+
+组件类型（均带 "type" 字段，文本字段全部是纯字符串）：
+- {"type":"heading","text":".."}   标题
+- {"type":"text","text":".."}      说明文字
+- {"type":"status","state":"ok|warn|error","text":".."}   状态条
+- {"type":"list","items":["第一项","第二项"]}   列表
+- {"type":"table","columns":["A","B"],"rows":[["1","2"],["3","4"]]}   表格
+- {"type":"button","label":"开始调研","action":"start","value":"按默认方案"}   动作按钮
+- {"type":"form","action":"submit_scope","submitLabel":"提交并继续","fields":[
+     {"name":"market","label":"目标市场","type":"text|textarea|select|checkbox",
+      "options":["美股","A股"],"required":true,"placeholder":"可留空"}]}   表单
+
+块格式：{"components":[ 组件1, 组件2, ... ]}（可解析 JSON，不超过 6 个组件、
+表单不超过 5 个字段）。
+
+规则：
+1. 需要用户决策才能继续时，把 button/form 放进块后立即结束本轮回复等待交互；
+   用户的交互会以「[A2UI 交互] action=… …」开头的用户消息回流，收到后按
+   action/value 继续执行，不要重复询问。
+2. 纯进度报告、最终总结不要用 A2UI，仍按执行协议的文本格式。
+3. 不确定用户偏好时，宁可生成一个带默认选项的 form 让用户一键确认，
+   也不要连发多条纯文本提问。
+
 You can browse the web by fetching pages inside the sandbox.
 Use the `execute` tool to run Python scripts or curl commands.
 
