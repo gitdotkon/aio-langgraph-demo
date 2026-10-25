@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import uuid
+import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,10 +28,23 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from agent_core import DEFAULT_TASK, create_agent, create_client, open_backend, sandbox_url  # noqa: E402
+from agent_core import (  # noqa: E402
+    SANDBOX_WORKING_DIR,
+    create_agent,
+    create_client,
+    default_task,
+    local_workspace,
+    open_backend,
+    sandbox_reachable,
+    sandbox_url,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
-WORKING_DIR = "/home/gem"
+
+
+def _working_dir() -> str:
+    """当前模式对应的工作目录（沙箱 /home/gem 或本地 local_workspace）。"""
+    return SANDBOX_WORKING_DIR if sandbox_reachable() else str(local_workspace())
 
 
 @asynccontextmanager
@@ -39,6 +53,8 @@ async def lifespan(app: FastAPI):
     # session is created per chat run (see /api/chat) to avoid idle timeouts.
     app.state.client = create_client()
     app.state.sandbox_url = sandbox_url()
+    mode = "sandbox" if sandbox_reachable() else "local"
+    print(f"[runtime] 沙箱可达性探测: mode={mode} (url={app.state.sandbox_url})")
     yield
     # Nothing to tear down on the client; per-run backends close themselves.
 
@@ -129,7 +145,13 @@ async def _execute_run(run: _Run):
     client = app.state.client
     backend = None
     try:
+        # open_backend 优先沙箱，连不通自动降级 LocalShellBackend（本地 runtime）
         backend = await asyncio.to_thread(open_backend, client)
+        if getattr(backend, "mode", "sandbox") == "local":
+            run.events.append({
+                "role": "system",
+                "content": f"沙箱不可达，本次任务已降级到本地 runtime（工作目录 {backend.working_dir}）",
+            })
         agent = create_agent(backend)
 
         seen = 0
@@ -153,17 +175,29 @@ async def _execute_run(run: _Run):
         run.events.append({"role": "error", "content": f"{type(exc).__name__}: {exc}"})
     finally:
         if backend is not None:
-            # shield cleanup from a pending cancellation so the session closes
-            try:
-                await asyncio.shield(asyncio.to_thread(backend.close))
-            except Exception:
-                pass
+            # shield cleanup from a pending cancellation so the session closes;
+            # LocalShellBackend 没有 close，用 getattr 保护
+            close = getattr(backend, "close", None)
+            if callable(close):
+                try:
+                    await asyncio.shield(asyncio.to_thread(close))
+                except Exception:
+                    pass
         _prune_runs()
 
 
 @app.get("/api/config")
 async def get_config():
-    return {"sandbox_url": app.state.sandbox_url, "default_task": DEFAULT_TASK}
+    reachable = sandbox_reachable()
+    mode = "sandbox" if reachable else "local"
+    wd = _working_dir()
+    return {
+        "sandbox_url": app.state.sandbox_url,
+        "sandbox_reachable": reachable,
+        "mode": mode,
+        "working_dir": wd,
+        "default_task": default_task(wd),
+    }
 
 
 @app.post("/api/runs")
@@ -237,6 +271,8 @@ async def list_runs():
 @app.get("/api/screenshot")
 async def screenshot():
     """Return the current AIO Sandbox browser/desktop screen as a PNG."""
+    if not sandbox_reachable():
+        raise HTTPException(status_code=503, detail="本地模式：无沙箱浏览器画面，截图不可用")
     client = app.state.client
 
     def _grab() -> bytes:
@@ -252,9 +288,42 @@ async def screenshot():
 
 
 @app.get("/api/files")
-async def list_files(path: str = WORKING_DIR):
-    """List a sandbox directory via the file API (no shell session needed)."""
+async def list_files(path: str | None = None):
+    """List a working directory: sandbox file API, or local scandir when degraded."""
+    if not sandbox_reachable():
+        root = local_workspace()
+        target = Path(path).resolve() if path else root
+        if not target.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="path must be inside the local workspace")
+
+        def _ls_local() -> list[dict]:
+            items = []
+            try:
+                entries = list(os.scandir(target))
+            except OSError:
+                return items
+            for e in entries:
+                # 只显示 Agent 生成的产物：跳过以点开头的隐藏文件/目录
+                if e.name.startswith("."):
+                    continue
+                stat = e.stat()
+                items.append({
+                    "name": e.name,
+                    "path": e.path,
+                    "is_dir": e.is_dir(),
+                    "size": None if e.is_dir() else stat.st_size,
+                    "modified_at": stat.st_mtime,
+                })
+            items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+            return items
+
+        try:
+            return {"path": str(target), "files": await asyncio.to_thread(_ls_local)}
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"list failed: {exc}") from exc
+
     client = app.state.client
+    path = path or SANDBOX_WORKING_DIR
 
     def _ls() -> list[dict]:
         resp = client.file.list_path(path=path, include_size=True)
@@ -283,7 +352,21 @@ async def list_files(path: str = WORKING_DIR):
 
 @app.get("/api/file")
 async def read_file(path: str):
-    """Read a sandbox file's text content via the file API."""
+    """Read a file's text content: sandbox file API, or local disk when degraded."""
+    if not sandbox_reachable():
+        root = local_workspace()
+        target = Path(path).resolve()
+        if not target.is_relative_to(root):
+            raise HTTPException(status_code=400, detail="path must be inside the local workspace")
+
+        def _read_local() -> str:
+            return target.read_text(encoding="utf-8", errors="replace")[:200_000]
+
+        try:
+            return {"path": path, "content": await asyncio.to_thread(_read_local)}
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"read failed: {exc}") from exc
+
     client = app.state.client
 
     def _read() -> str:
@@ -298,13 +381,22 @@ async def read_file(path: str):
 
 @app.post("/api/open")
 async def open_in_sandbox(req: OpenRequest):
-    """Open a file with the sandbox's own Chrome on its desktop (DISPLAY :99).
+    """Open a file for preview.
 
-    The result shows up in the "浏览器" tab because that tab mirrors the sandbox
-    desktop via /api/screenshot.
+    sandbox 模式：用沙箱自己的 Chrome 在桌面（DISPLAY :99）打开，结果体现在
+    “浏览器”页签的 /api/screenshot 回显里；
+    local 模式：用宿主机默认浏览器打开 file:// 地址（沙箱桌面不可用）。
     """
     path = req.path or ""
-    if not path.startswith(WORKING_DIR + "/"):
+    if not sandbox_reachable():
+        root = local_workspace()
+        target = Path(path).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise HTTPException(status_code=400, detail="path must be a file inside the local workspace")
+        opened = await asyncio.to_thread(webbrowser.open, target.as_uri())
+        return {"ok": opened, "path": str(target), "detail": "opened in host browser (local mode)"}
+
+    if not path.startswith(SANDBOX_WORKING_DIR + "/"):
         raise HTTPException(status_code=400, detail="path must be inside the sandbox working dir")
     # crude sanitize: keep it a plain filesystem path
     safe = path.replace('"', "").replace("`", "").replace(";", "").replace("$", "")
@@ -312,7 +404,7 @@ async def open_in_sandbox(req: OpenRequest):
     client = app.state.client
 
     def _open() -> str:
-        s = client.shell.create_session(exec_dir=WORKING_DIR)
+        s = client.shell.create_session(exec_dir=SANDBOX_WORKING_DIR)
         sid = s.data.session_id
         try:
             cmd = (

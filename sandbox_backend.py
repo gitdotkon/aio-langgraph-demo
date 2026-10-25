@@ -37,7 +37,7 @@ class AIOSandboxBackend(BaseSandbox):
         from agent_sandbox import Sandbox
         from sandbox_backend import AIOSandboxBackend
 
-        client = Sandbox(base_url="http://localhost:8080")
+        client = Sandbox(base_url="http://konmini.local:8080")
         backend = AIOSandboxBackend(client)
 
         agent = create_deep_agent(
@@ -49,6 +49,9 @@ class AIOSandboxBackend(BaseSandbox):
         with AIOSandboxBackend(client) as backend:
             ...
     """
+
+    #: 运行模式标识，与 LocalShellBackend 的 mode="local" 对应（agent_core 设置）
+    mode = "sandbox"
 
     def __init__(
         self,

@@ -137,6 +137,7 @@
   .c-msg--user { align-self: flex-end; background: var(--c-user); }
   .c-msg--assistant { align-self: flex-start; background: var(--c-assistant); border: 1px solid var(--c-border); }
   .c-msg--error { align-self: flex-start; background: rgba(229,72,77,.12); border: 1px solid var(--c-error); color: #ffb3b5; }
+  .c-msg--system { align-self: flex-start; background: var(--c-surface-2); border: 1px dashed var(--c-border); color: var(--c-fg-muted); }
 
   .c-msg__role {
     font-size: 11px;
@@ -488,9 +489,19 @@
   const sendBtn = document.getElementById("send");
   const empty = log.querySelector(".c-empty");
 
-  // ---- 沙箱地址展示 ----
+  // ---- 运行模式展示（沙箱优先，不可达时降级本地 runtime）----
   fetch("/api/config").then(r => r.json()).then(c => {
-    document.getElementById("sandboxMeta").textContent = "sandbox: " + c.sandbox_url;
+    const meta = document.getElementById("sandboxMeta");
+    if (c.mode === "local") {
+      meta.textContent = "⚠ 本地模式（沙箱不可达）· 工作目录: " + (c.working_dir || "-");
+      // 本地模式无沙箱桌面，禁用浏览器画面回显
+      const btn = document.getElementById("toggleScreen");
+      if (btn) { btn.disabled = true; btn.textContent = "不可用"; }
+      const ph = document.getElementById("screenPlaceholder");
+      if (ph) ph.textContent = "当前为本地模式，无沙箱浏览器画面回显。";
+    } else {
+      meta.textContent = "sandbox: " + c.sandbox_url + " · 沙箱模式";
+    }
   }).catch(() => {});
 
   // ---- 渲染辅助 ----
@@ -550,6 +561,13 @@
     m.appendChild(el("div", null, text));
     log.appendChild(m); scrollBottom();
   }
+  function addSystem(text) {
+    clearEmpty();
+    const m = el("div", "c-msg c-msg--system");
+    m.appendChild(el("div", "c-msg__role", "系统"));
+    m.appendChild(el("div", null, text));
+    log.appendChild(m); scrollBottom();
+  }
 
   let typingEl = null;
   function showTyping() {
@@ -576,6 +594,9 @@
     } else if (obj.role === "tool") {
       addToolResult(obj.name, obj.content);
       pushLog("result", "返回 " + obj.name, (obj.content || "").slice(0, 300));
+    } else if (obj.role === "system") {
+      addSystem(obj.content);
+      pushLog("ai", "系统", obj.content);
     } else if (obj.role === "error") {
       addError(obj.content);
       pushLog("error", "错误", obj.content);

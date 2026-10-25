@@ -13,3 +13,6 @@ uv.lock.local
 .DS_Store
 .idea/
 .vscode/
+
+# 沙箱不可达时的本地降级工作区
+local_workspace/

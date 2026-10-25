@@ -13,11 +13,18 @@ DeepAgents Agent (LangGraph)
         ├── execute(cmd)       → client.shell.exec_command()
         ├── upload_files()     → client.file.write_file()
         └── download_files()   → client.file.download_file()
-            └── agent-sandbox SDK → AIO Sandbox HTTP API (localhost:8080)
+            └── agent-sandbox SDK → AIO Sandbox HTTP API (konmini.local:8080)
 ```
 
 Agent 获得 write / edit / read / ls / glob / execute 等工具，
 所有操作都发生在 AIO Sandbox 的 Docker 容器里，与宿主机隔离。
+
+> **运行时降级**：默认使用沙箱。`agent_core.open_backend()` 会先 HTTP 探测
+> `SANDBOX_URL`（超时可用 `SANDBOX_PROBE_TIMEOUT` 调整，结果缓存 15s），
+> 沙箱连不通时自动降级为本地 runtime（deepagents `LocalShellBackend`），
+> 工作目录切换到项目下 `./local_workspace/`，提示词随之调整：
+> 浏览器画面回显/沙箱内打开等沙箱专属能力在本地模式不可用（文件预览改走本地盘、宿主机浏览器）。
+> ⚠️ 本地模式**无隔离**，agent 以本机用户权限执行命令，仅在可信环境使用。
 
 提供两种运行形态，共享同一套 Agent 逻辑（`agent_core.py`）：
 
@@ -31,6 +38,10 @@ agent_core.py  # 系统提示词 / 模型 / Agent 构建（CLI 与 Web UI 共用
 ## 运行步骤
 
 ### 1. 启动 AIO Sandbox（需要 Docker）
+
+> 本项目当前接入局域网机器 `konmini.local` 上已运行的沙箱
+> （`.env` 中 `SANDBOX_URL=http://konmini.local:8080`）。
+> 若要换回本机容器，用下面任一命令启动，并把 `SANDBOX_URL` 改回 `http://localhost:8080`。
 
 国内用户：
 
@@ -46,7 +57,8 @@ docker run --security-opt seccomp=unconfined --rm -it -p 127.0.0.1:8080:8080 \
   ghcr.io/agent-infra/sandbox:latest
 ```
 
-启动后浏览器打开 http://localhost:8080 可看到控制台（终端 / 浏览器 / VSCode）。
+启动后浏览器打开 http://konmini.local:8080（本机容器则用 http://localhost:8080）
+可看到沙箱控制台（终端 / 浏览器 / VSCode）。
 
 ### 2. 安装依赖（需要 Python 3.12+，推荐 uv）
 
@@ -84,8 +96,8 @@ uv run uvicorn web_app:app --reload --port 7860
 # 浏览器打开 http://localhost:7860
 ```
 
-- 左侧输入任务，实时流式显示 Agent 回复、工具调用与返回结果。
-- 右侧点击「开始」轮询回显沙箱内浏览器 / 桌面截图（`/api/screenshot`）。
+- 左侧输入任务，实时流式显示 Agent 回复、工具调用与返回结果；沙箱不可达时会自动降级本地 runtime，消息流里会显示系统提示。
+- 右侧点击「开始」轮询回显沙箱内浏览器 / 桌面截图（`/api/screenshot`，仅沙箱模式可用，本地模式显示降级提示）。
 - 任务运行在服务端后台（`/api/runs`），支持**停止（打断）**、**后台执行**（断开后可从任务芯片重新接入回放），互不干扰。
 
 默认任务：调研 AI 编程助手市场，生成 `/home/gem/report.md` 与单文件 `/home/gem/report.html`。
@@ -93,8 +105,9 @@ uv run uvicorn web_app:app --reload --port 7860
 ## 自定义
 
 - 改提问：`uv run main.py "你的问题"`，或在 Web 界面输入框直接发送
-- 改系统提示词 / 默认任务：`agent_core.py` 中的 `SYSTEM_PROMPT`、`DEFAULT_TASK`
+- 改系统提示词 / 默认任务：`agent_core.py` 中的 `_SYSTEM_PROMPT`、`_DEFAULT_TASK`（模板，`{WORKDIR}` 为工作目录占位）
 - 换模型：`.env` 中的 `OPENAI_MODEL_ID`
+- 降级工作区：`.env` 中的 `LOCAL_WORKSPACE_DIR`（默认 `./local_workspace`）
 
 ## 参考链接
 

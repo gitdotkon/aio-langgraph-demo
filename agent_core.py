@@ -7,18 +7,26 @@ the command-line demo and the web interface behave identically.
 from __future__ import annotations
 
 import os
+import time
+from pathlib import Path
 
+import httpx
 from agent_sandbox import Sandbox
 from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
 from langchain.chat_models.base import init_chat_model
 
 from sandbox_backend import AIOSandboxBackend
 
-# 确保访问 localhost 时绕过系统代理
-os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
+# 确保访问沙箱（localhost / konmini.local）时绕过系统代理
+os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,konmini.local")
 
-SYSTEM_PROMPT = """You are a market research analyst with sandbox access.
-Your working directory is /home/gem. Write files there.
+# 沙箱模式下的 Agent 工作目录
+SANDBOX_WORKING_DIR = "/home/gem"
+
+# 系统提示词模板：{WORKDIR} 替换为实际工作目录，{METHOD3} 仅沙箱模式注入
+_SYSTEM_PROMPT = """You are a market research analyst with sandbox access.
+Your working directory is {WORKDIR}. Write files there.
 
 You can browse the web by fetching pages inside the sandbox.
 Use the `execute` tool to run Python scripts or curl commands.
@@ -63,25 +71,14 @@ print(text[:3000])
 "
 ```
 
-## Method 3: Browser screenshot (for visual verification)
-```python
-from agent_sandbox import Sandbox
-client = Sandbox(base_url="http://localhost:8080")
-# Low-level browser control (keyboard/mouse actions only)
-client.browser.execute_action(request={"action_type": "HOTKEY", "keys": ["ctrl", "l"]})
-client.browser.execute_action(request={"action_type": "TYPING", "text": "https://example.com"})
-client.browser.execute_action(request={"action_type": "HOTKEY", "keys": ["enter"]})
-import time; time.sleep(3)
-result = client.browser.screenshot()
-```
-
+{METHOD3}
 Workflow for market research:
 1. Use httpx/curl to fetch search results and web pages
 2. Extract and analyze content from multiple sources
 3. Cross-reference data for accuracy
-4. Write a structured market research report to /home/gem/report.md
+4. Write a structured market research report to {WORKDIR}/report.md
 5. Convert the report into a styled single-file HTML page and save it as
-   /home/gem/report.html
+   {WORKDIR}/report.html
 
 ## HTML report requirements (follow these conventions strictly)
 - Single self-contained file: all CSS in one embedded <style> block;
@@ -96,19 +93,79 @@ Workflow for market research:
   (<table>, <th scope="col">), aria-label on icon-only controls.
 - Mobile friendly: max-width container with relative units, responsive
   tables (overflow-x wrapper).
-- Always save BOTH files: /home/gem/report.md AND /home/gem/report.html"""
+- Always save BOTH files: {WORKDIR}/report.md AND {WORKDIR}/report.html"""
 
-# CLI 与 UI 在未提供输入时使用的默认任务
-DEFAULT_TASK = (
+# 沙箱模式专属：浏览器截图段（本地降级时没有沙箱桌面，整段移除）
+_BROWSER_METHOD = """## Method 3: Browser screenshot (for visual verification)
+```python
+from agent_sandbox import Sandbox
+# 在沙箱内运行的脚本访问自身 API 用 localhost；从宿主机访问才用 SANDBOX_URL
+client = Sandbox(base_url="http://localhost:8080")
+# Low-level browser control (keyboard/mouse actions only)
+client.browser.execute_action(request={"action_type": "HOTKEY", "keys": ["ctrl", "l"]})
+client.browser.execute_action(request={"action_type": "TYPING", "text": "https://example.com"})
+client.browser.execute_action(request={"action_type": "HOTKEY", "keys": ["enter"]})
+import time; time.sleep(3)
+result = client.browser.screenshot()
+```
+
+"""
+
+# CLI 与 UI 在未提供输入时使用的默认任务模板
+_DEFAULT_TASK = (
     "请对 AI 编程助手市场进行调研（如 Cursor、GitHub Copilot、Windsurf 等产品），"
     "包括市场规模、主要玩家、产品特点、定价策略和竞争格局。"
-    "使用浏览器搜索相关资料，先将调研报告保存到 /home/gem/report.md，"
-    "再按系统提示中的 HTML 规范生成排版精美的单文件报告，保存到 /home/gem/report.html。"
+    "使用浏览器搜索相关资料，先将调研报告保存到 {WORKDIR}/report.md，"
+    "再按系统提示中的 HTML 规范生成排版精美的单文件报告，保存到 {WORKDIR}/report.html。"
 )
 
 
+def build_system_prompt(working_dir: str, *, sandbox_mode: bool = True) -> str:
+    """按工作目录与运行模式生成系统提示词。"""
+    prompt = _SYSTEM_PROMPT.replace("{WORKDIR}", working_dir)
+    return prompt.replace("{METHOD3}", _BROWSER_METHOD if sandbox_mode else "")
+
+
+def default_task(working_dir: str) -> str:
+    return _DEFAULT_TASK.replace("{WORKDIR}", working_dir)
+
+
+def local_workspace() -> Path:
+    """降级模式的本地工作区（默认项目下 ./local_workspace，自动创建）。"""
+    dir_ = os.getenv("LOCAL_WORKSPACE_DIR") or str(Path(__file__).parent / "local_workspace")
+    root = Path(dir_).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+# (url, 结果, 过期时间戳)；只缓存默认 SANDBOX_URL 的探测结果
+_probe_cache: tuple[str, bool, float] | None = None
+_PROBE_TTL = 15.0
+
+
+def sandbox_reachable(url: str | None = None) -> bool:
+    """HTTP 探测沙箱是否连通。
+
+    收到任意 HTTP 响应（含 404/5xx）即视为可达；只有连接失败/超时/代理
+    错误才视为不可达。结果缓存 15s，避免每个 Web 请求都探测一次。
+    """
+    global _probe_cache
+    url = url or sandbox_url()
+    now = time.monotonic()
+    if _probe_cache is not None and _probe_cache[0] == url and now < _probe_cache[2]:
+        return _probe_cache[1]
+    timeout = float(os.getenv("SANDBOX_PROBE_TIMEOUT", "3"))
+    try:
+        httpx.get(url, timeout=timeout, follow_redirects=True)
+        ok = True
+    except httpx.HTTPError:
+        ok = False
+    _probe_cache = (url, ok, now + _PROBE_TTL)
+    return ok
+
+
 def sandbox_url() -> str:
-    return os.getenv("SANDBOX_URL", "http://localhost:8080")
+    return os.getenv("SANDBOX_URL", "http://konmini.local:8080")
 
 
 def create_client() -> Sandbox:
@@ -125,20 +182,36 @@ def build_model():
     )
 
 
-def open_backend(client: Sandbox) -> AIOSandboxBackend:
-    """Create (but do not enter) a sandbox backend for the given client.
+def open_backend(client: Sandbox | None = None):
+    """选择执行后端：优先 AIO Sandbox，连不通降级本地 runtime。
 
-    Construction opens a persistent shell session, so this performs a blocking
-    network call. In async contexts, run it via asyncio.to_thread().
-    Call .close() when done.
+    - 沙箱可达：AIOSandboxBackend（mode="sandbox"，working_dir="/home/gem"）
+    - 沙箱不可达：LocalShellBackend（mode="local"，working_dir=./local_workspace）
+
+    两类后端都暴露 working_dir / mode 属性供调用方区分模式。
+    沙箱路径是阻塞网络调用，异步上下文请用 asyncio.to_thread()；
+    用完后调 .close()（LocalShellBackend 没有 close，请先用 getattr 保护）。
     """
-    return AIOSandboxBackend(client)
+    if sandbox_reachable():
+        client = client or create_client()
+        return AIOSandboxBackend(client, working_dir=SANDBOX_WORKING_DIR)
+    root = local_workspace()
+    backend = LocalShellBackend(
+        root_dir=str(root),
+        virtual_mode=False,
+        inherit_env=True,
+        timeout=120,
+    )
+    backend.mode = "local"
+    backend.working_dir = str(root)
+    return backend
 
 
-def create_agent(backend: AIOSandboxBackend):
-    """创建 DeepAgents 深度智能体，AIO Sandbox 作为后端。"""
+def create_agent(backend):
+    """创建 DeepAgents 深度智能体；系统提示词随后端模式（沙箱/本地）自动调整。"""
+    sandbox_mode = getattr(backend, "mode", "sandbox") == "sandbox"
     return create_deep_agent(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=build_system_prompt(backend.working_dir, sandbox_mode=sandbox_mode),
         model=build_model(),
         backend=backend,
     )
