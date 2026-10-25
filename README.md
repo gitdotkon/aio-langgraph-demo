@@ -95,6 +95,10 @@ Web 交互界面形态（聊天 + 沙箱浏览器画面实时回显）：
 ```bash
 uv run uvicorn web_app:app --reload --port 7860
 # 浏览器打开 http://localhost:7860
+
+# 局域网内其他设备访问（手机/平板）：需显式绑定 0.0.0.0，uvicorn 默认只监听 127.0.0.1
+uv run uvicorn web_app:app --host 0.0.0.0 --port 7860
+# 同一 Wi-Fi 下打开 http://<本机局域网IP>:7860
 ```
 
 - 左侧输入任务，实时流式显示 Agent 回复、工具调用与返回结果；沙箱不可达时会自动降级本地 runtime，消息流里会显示系统提示。

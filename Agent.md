@@ -18,7 +18,7 @@ Agent 角色：**市场调研分析师**，在沙箱内调研并产出报告；�
 | `agent_core.py` | 提示词模板（`build_system_prompt(workdir)` / `default_task(workdir)`，含**先 Plan 后执行协议**）、`sandbox_reachable(force=)` 探测、`startup_check()` 启动检查（CLI/Web 共用，打印模式与降级原因）、`open_backend()` 运行时选择器（沙箱优先，降级 `LocalShellBackend`）、`build_model()`、`create_agent(backend, checkpointer=None)` —— CLI 与 Web 共用的唯一事实源 |
 | `sandbox_backend.py` | `AIOSandboxBackend`：实现 DeepAgents `BaseSandbox` 协议，把 execute/读写文件转发到沙箱；构造时打开持久 shell 会话（阻塞网络调用），用完必须 `close()` |
 | `main.py` | CLI 入口：流式打印 agent 执行过程 |
-| `web_app.py` | FastAPI 后端（端口 7860）：后台任务 runs + SSE + 沙箱代理接口 |
+| `web_app.py` | FastAPI 后端（端口 7860）：后台任务 runs + SSE + 沙箱代理接口；默认只监听 127.0.0.1，局域网访问需 `--host 0.0.0.0` |
 | `static/index.html` | 单文件自包含前端：聊天 + 三标签面板（浏览器/文件系统/日志追踪），无外部依赖 |
 
 ## Agent 执行链路
